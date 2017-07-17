@@ -6,6 +6,10 @@
 #include <costmap_2d/GenericPluginConfig.h>
 #include <dynamic_reconfigure/server.h>
 #include "geometry_msgs/Polygon.h"
+#include <geometry_msgs/PoseStamped.h>
+#include <move_base_msgs/MoveBaseActionResult.h>
+
+# define PI           3.14159265358979323846
 
 namespace simple_layer_namespace{
 	class GridLayer : public costmap_2d::Layer, public costmap_2d::Costmap2D{
@@ -22,10 +26,17 @@ namespace simple_layer_namespace{
 		  }
 		  ros::NodeHandle n;
 		  ros::Subscriber sub = n.subscribe("polygonPublisher", 1000, &GridLayer::msgSub, this);
+		  ros::Subscriber osub = n.subscribe("/move_base_simple/goal", 1000, &GridLayer::goalSub, this);
+		  ros::Subscriber rsub = n.subscribe("/move_base/result", 1000, &GridLayer::resultSub, this);
 		  std::vector<float> xs;
 		  std::vector<float> ys;
 		  virtual void msgSub(const geometry_msgs::Polygon::ConstPtr& msg);
+		  virtual void goalSub(const geometry_msgs::PoseStamped::ConstPtr& msg);
+		  virtual void resultSub(const move_base_msgs::MoveBaseActionResult::ConstPtr& msg);
 		  virtual void matchSize();
+		  double goalX, robotX, commandX;
+		  bool poseSet;
+		  bool goalStatus;
 
 		private:
 		  void reconfigureCB(costmap_2d::GenericPluginConfig &config, uint32_t level);

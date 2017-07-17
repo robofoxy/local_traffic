@@ -4,6 +4,7 @@
 PLUGINLIB_EXPORT_CLASS(simple_layer_namespace::GridLayer, costmap_2d::Layer)
 
 using costmap_2d::LETHAL_OBSTACLE;
+using costmap_2d::FREE_SPACE;
 using costmap_2d::NO_INFORMATION;
 
 namespace simple_layer_namespace{
@@ -12,6 +13,8 @@ namespace simple_layer_namespace{
 	void GridLayer::onInitialize(){
 		ros::NodeHandle nh("~/" + name_);
 		rolling_window_ = layered_costmap_->isRolling();
+		poseSet = false;
+		goalStatus = true;
 		current_ = true;
 		default_value_ = NO_INFORMATION;
 		matchSize();
@@ -39,6 +42,7 @@ namespace simple_layer_namespace{
 			updateOrigin(robot_x - (getSizeInMetersX() - 4) / 2.0 , robot_y - (getSizeInMetersY() - 4) / 2.0 );
 		if (!enabled_) return;
 
+		robotX=robot_x;
 		double mark_x = robot_x + cos(robot_yaw), mark_y = robot_y + sin(robot_yaw);
 		unsigned int mx;
 		unsigned int my;
@@ -53,6 +57,18 @@ namespace simple_layer_namespace{
 		*max_y = std::max(*max_y, mark_y);
 	}
 
+	void GridLayer::resultSub(const move_base_msgs::MoveBaseActionResult::ConstPtr& msg){
+		if(msg->status.status==3) goalStatus = true;
+	}
+
+
+
+	void GridLayer::goalSub(const geometry_msgs::PoseStamped::ConstPtr& msg){
+		goalX = msg->pose.position.x;
+		commandX = robotX;
+		poseSet = true;
+		goalStatus = false;
+	}
 
 
 	void GridLayer::msgSub(const geometry_msgs::Polygon::ConstPtr& msg){
@@ -64,7 +80,7 @@ namespace simple_layer_namespace{
 			xs.push_back(msg->points[i].x);
 			ys.push_back(msg->points[i].y);
 		}
-	};
+	}
 
 	void GridLayer::updateCosts(costmap_2d::Costmap2D& master_grid, int min_i, int min_j, int max_i,
 		                                      int max_j){
@@ -82,72 +98,128 @@ namespace simple_layer_namespace{
 			if(ys[k] < miny) miny = ys[k];
 		}
 	
-		if(numberOfDots < 3) return;
+		if(numberOfDots >= 3){
+			worldToMap(minx, miny, mapMinx, mapMiny);
+			worldToMap(maxx, maxy, mapMaxx, mapMaxy);
 	
-		worldToMap(minx, miny, mapMinx, mapMiny);
-		worldToMap(maxx, maxy, mapMaxx, mapMaxy);
+			int cw=0;
+			unsigned int fx, fy, sx, sy, tx, ty;
+			int fvx, fvy, svx, svy;
 	
-		int cw=0;
-		unsigned int fx, fy, sx, sy, tx, ty;
-		int fvx, fvy, svx, svy;
+			worldToMap(xs[0], ys[0], fx, fy);
+			worldToMap(xs[1], ys[1], sx, sy);
+			worldToMap(xs[2], ys[2], tx, ty);
 	
-		worldToMap(xs[0], ys[0], fx, fy);
-		worldToMap(xs[1], ys[1], sx, sy);
-		worldToMap(xs[2], ys[2], tx, ty);
+			fvx=(int) sx - (int) fx;
+			fvy=(int) sy - (int) fy;
+			svx=(int) tx - (int) sx;
+			svy=(int) ty - (int) sy;
 	
-		fvx=(int) sx - (int) fx;
-		fvy=(int) sy - (int) fy;
-		svx=(int) tx - (int) sx;
-		svy=(int) ty - (int) sy;
-	
-		if(fx*sy-fy*sx >= 0) cw = 0;												//Determines orientation of points.
-		else cw = 1;
-
-		for (int j = min_j; j < max_j; j++){
-			for (int i = min_i; i < max_i; i++){
-				int control = 0, concavity = 0;
-				for(int k = 0; k < numberOfDots; k++){
-					unsigned int lx, ly, ox, oy, rx, ry;
-					worldToMap(xs[k], ys[k], ox, oy);
+			if(fx*sy-fy*sx >= 0) cw = 0;												//Determines orientation of points.
+			else cw = 1;
+			
+			for (int j = min_j; j < max_j; j++){
+				for (int i = min_i; i < max_i; i++){
+					int control = 0, concavity = 0;
+					for(int k = 0; k < numberOfDots; k++){
+						unsigned int lx, ly, ox, oy, rx, ry;
+						worldToMap(xs[k], ys[k], ox, oy);
 					
-					if(k == 0) worldToMap(xs[numberOfDots-1], ys[numberOfDots-1], lx, ly);
-					else worldToMap(xs[k-1], ys[k-1], lx, ly);
-					if(k == numberOfDots-1) worldToMap(xs[0], ys[0], rx, ry);
-					else worldToMap(xs[k+1], ys[k+1], rx, ry);
+						if(k == 0) worldToMap(xs[numberOfDots-1], ys[numberOfDots-1], lx, ly);
+						else worldToMap(xs[k-1], ys[k-1], lx, ly);
+						if(k == numberOfDots-1) worldToMap(xs[0], ys[0], rx, ry);
+						else worldToMap(xs[k+1], ys[k+1], rx, ry);
 					
-					int LvX = (int)lx-(int)ox, LvY = (int)ly-(int)oy, RvX = (int)rx-(int)ox, RvY = (int)ry-(int)oy;
-					int actX = (int)i-(int)ox, actY = (int)j-(int)oy;
+						int LvX = (int)lx-(int)ox, LvY = (int)ly-(int)oy, RvX = (int)rx-(int)ox, RvY = (int)ry-(int)oy;
+						int actX = (int)i-(int)ox, actY = (int)j-(int)oy;
 					
-					if(cw){
-						if(RvX*LvY-RvY*LvX <= 0){								//Determines corner type (concave or convex).
-							if(RvX*actY - RvY*actX <= 0 && LvX*actY - LvY*actX >= 0) control++;
-							else continue;
-						}
-						else{
-							concavity++;
-							if(RvX*actY - RvY*actX <= 0 || LvX*actY - LvY*actX >= 0) control++;
-							else continue;
-						}
+						if(cw){
+							if(RvX*LvY-RvY*LvX <= 0){								//Determines corner type (concave or convex).
+								if(RvX*actY - RvY*actX <= 0 && LvX*actY - LvY*actX >= 0) control++;
+								else continue;
+							}
+							else{
+								concavity++;
+								if(RvX*actY - RvY*actX <= 0 || LvX*actY - LvY*actX >= 0) control++;
+								else continue;
+							}
 				
-					}
-					else{
-						if(RvX*LvY-RvY*LvX >= 0){								//Determines concave or	convex
-							if(RvX*actY - RvY*actX >= 0 && LvX*actY - LvY*actX <= 0) control++;
-							else continue;
 						}
 						else{
-							concavity++;
-							if(RvX*actY - RvY*actX >= 0 || LvX*actY - LvY*actX <= 0) control++;
-							else continue;
+							if(RvX*LvY-RvY*LvX >= 0){								//Determines concave or	convex
+								if(RvX*actY - RvY*actX >= 0 && LvX*actY - LvY*actX <= 0) control++;
+								else continue;
+							}
+							else{
+								concavity++;
+								if(RvX*actY - RvY*actX >= 0 || LvX*actY - LvY*actX <= 0) control++;
+								else continue;
+							}
 						}
+					}
+					if(control>=numberOfDots - concavity && i<mapMaxx && i>mapMinx && j>mapMiny && j<mapMaxy){	
+						int index = getIndex(i, j);
+						if (master_grid.getCost(i, j) >= 100) continue;
+						master_grid.setCost(i, j, LETHAL_OBSTACLE);
 					}
 				}
-				if(control>=numberOfDots - concavity && i<mapMaxx && i>mapMinx && j>mapMiny && j<mapMaxy){	
+			}
+		}
+		//top
+		unsigned int tLX, tLY, tRX, tRY;
+		//mid
+		unsigned int mLX, mLY, mRX, mRY;
+		//bot
+		unsigned int bLX, bLY, bRX, bRY;
+		
+		worldToMap(4.5, 6, tLX, tLY);
+		worldToMap(6, 6, tRX, tRY);
+		worldToMap(4.5,4.25, mLX, mLY);
+		worldToMap(6,4.25, mRX, mRY);
+		worldToMap(4.5, 2.5, bLX, bLY);
+		worldToMap(6, 2.5, bRX, bRY);
+		
+
+		if(!goalStatus && goalX >7 && commandX < 3.5){
+			for(int i = mLX; i< tRX; i++){
+				for(int j = mLY-10; j< tRY; j++){
 					int index = getIndex(i, j);
-					if (master_grid.getCost(i, j) >= 100) continue;
+					master_grid.setCost(i, j, LETHAL_OBSTACLE);
+				}
+			}
+			
+			for(int i = bLX; i< mRX; i++){
+				for(int j = bLY; j< mRY; j++){
+					int index = getIndex(i, j);
+					master_grid.setCost(i, j, FREE_SPACE);
+				}
+			}
+		}
+		else if(!goalStatus && goalX < 3.5 && commandX > 7){
+			for(int i = mLX; i< tRX; i++){
+				for(int j = mLY; j< tRY; j++){
+					int index = getIndex(i, j);
+					master_grid.setCost(i, j, FREE_SPACE);
+				}
+			}
+			
+			for(int i = bLX; i< mRX; i++){
+				for(int j = bLY; j< mRY; j++){
+					int index = getIndex(i, j);
 					master_grid.setCost(i, j, LETHAL_OBSTACLE);
 				}
 			}
 		}
+		
+		else{
+			for(int i = bLX; i< tRX; i++){
+				for(int j = bLY; j< tRY; j++){
+					int index = getIndex(i, j);
+					master_grid.setCost(i, j, FREE_SPACE);
+				}
+			}
+		}
+
+		
 	}
 } // end namespace
